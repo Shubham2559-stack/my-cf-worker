@@ -1,9 +1,3 @@
-my-cf-worker repo
-→ .github/workflows/deploy.yml
-→ Pencil icon (Edit)
-→ Sab delete karo
-→ Ye paste karo
-→ Commit karo
 name: Deploy Worker
 
 on:
