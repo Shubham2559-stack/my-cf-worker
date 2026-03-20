@@ -1,8 +1,3 @@
-wrangler.toml file
-→ Edit
-→ Sab delete
-→ Ye paste karo
-→ Commit karo
 name = "telegram-stream"
 main = "index.js"
 compatibility_date = "2024-09-23"
