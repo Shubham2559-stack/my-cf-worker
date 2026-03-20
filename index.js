@@ -1,12 +1,11 @@
 export default {
     async fetch(request, env, ctx) {
 
-        // env se BOT_TOKEN lo
         const BOT_TOKEN = env.BOT_TOKEN;
 
         if (!BOT_TOKEN) {
             return new Response(
-                JSON.stringify({ error: 'BOT_TOKEN not configured' }),
+                JSON.stringify({ error: 'BOT_TOKEN not set' }),
                 { status: 500, headers: { 'Content-Type': 'application/json' } }
             );
         }
@@ -20,11 +19,15 @@ export default {
         const corsHeaders = {
             'Access-Control-Allow-Origin':  '*',
             'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Headers': 'Range, Content-Type',
+            'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
         };
 
         if (request.method === 'OPTIONS') {
-            return new Response(null, { headers: corsHeaders });
+            return new Response(null, {
+                status: 204,
+                headers: corsHeaders
+            });
         }
 
         if (path === '/' || path === '/health') {
@@ -53,60 +56,99 @@ export default {
 
 async function streamVideo(request, fileId, corsHeaders, TG_API, TG_FILE) {
     try {
-        const fileInfo = await getFileInfo(fileId, TG_API);
+        // Step 1: File info lo
+        const infoResponse = await fetch(
+            `${TG_API}/getFile?file_id=${fileId}`
+        );
+        const fileInfo = await infoResponse.json();
 
         if (!fileInfo.ok) {
             return new Response(
-                JSON.stringify({ error: 'File not found' }),
-                { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+                JSON.stringify({
+                    error: 'Telegram file not found',
+                    details: fileInfo,
+                    hint: 'File 20MB se badi hai ya expired hai'
+                }),
+                {
+                    status: 404,
+                    headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                }
             );
         }
 
+        // Step 2: Direct stream URL
         const filePath  = fileInfo.result.file_path;
+        const fileSize  = fileInfo.result.file_size;
         const streamUrl = `${TG_FILE}/${filePath}`;
 
-        const rangeHeader  = request.headers.get('Range');
-        const fetchHeaders = {};
+        // Step 3: Range header handle karo
+        const rangeHeader = request.headers.get('Range');
+        const fetchInit   = { headers: {} };
+
         if (rangeHeader) {
-            fetchHeaders['Range'] = rangeHeader;
+            fetchInit.headers['Range'] = rangeHeader;
         }
 
-        const response = await fetch(streamUrl, {
-            headers: fetchHeaders,
-            cf: { cacheEverything: true, cacheTtl: 86400 }
-        });
-
-        const responseHeaders = {
-            ...corsHeaders,
-            'Content-Type':  response.headers.get('Content-Type') || 'video/mp4',
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=86400',
+        // Step 4: Cloudflare cache ke saath fetch
+        fetchInit.cf = {
+            cacheEverything: true,
+            cacheTtl: 3600,
+            cacheKey: `tg-file-${fileId}`
         };
 
+        const response = await fetch(streamUrl, fetchInit);
+
+        if (!response.ok && response.status !== 206) {
+            return new Response(
+                JSON.stringify({
+                    error: 'Fetch failed',
+                    status: response.status,
+                    hint: 'File 20MB limit cross kar gayi hogi'
+                }),
+                {
+                    status: response.status,
+                    headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                }
+            );
+        }
+
+        // Step 5: Response headers
+        const responseHeaders = {
+            ...corsHeaders,
+            'Content-Type':   response.headers.get('Content-Type') || 'video/mp4',
+            'Accept-Ranges':  'bytes',
+            'Cache-Control':  'public, max-age=3600',
+        };
+
+        if (fileSize) {
+            responseHeaders['Content-Length'] = String(fileSize);
+        }
+
         const contentLength = response.headers.get('Content-Length');
-        if (contentLength) responseHeaders['Content-Length'] = contentLength;
+        if (contentLength) {
+            responseHeaders['Content-Length'] = contentLength;
+        }
 
         const contentRange = response.headers.get('Content-Range');
-        if (contentRange) responseHeaders['Content-Range'] = contentRange;
+        if (contentRange) {
+            responseHeaders['Content-Range'] = contentRange;
+        }
 
         return new Response(response.body, {
-            status:  response.status,
+            status:  rangeHeader ? 206 : 200,
             headers: responseHeaders
         });
 
     } catch (error) {
         return new Response(
-            JSON.stringify({ error: 'Stream failed', message: error.message }),
-            { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+            JSON.stringify({
+                error:   'Stream error',
+                message: error.message
+            }),
+            {
+                status: 500,
+                headers: { 'Content-Type': 'application/json', ...corsHeaders }
+            }
         );
-    }
-}
-
-async function getFileInfo(fileId, TG_API) {
-    try {
-        const response = await fetch(`${TG_API}/getFile?file_id=${fileId}`);
-        return await response.json();
-    } catch (error) {
-        return { ok: false, error: error.message };
     }
 }
